@@ -1,0 +1,429 @@
+// ==UserScript==
+// @name         超星学习通助手瑞幸咖啡
+// @namespace    http://tampermonkey.net/
+// @version      0.3
+// @description  辅助学习功能，请合理使用
+// @author       橙C美式
+// @match        *://mooc1-*.chaoxing.com/*
+// @match        *://mooc2-*.chaoxing.com/*
+// @grant        GM_xmlhttpRequest
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @grant        GM_addStyle
+// @connect      *
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    // 配置设置
+    const settings = {
+        autoPlay: true,
+        autoNext: true,
+        autoAnswer: true,
+        useAI: true,
+        speed: 2.0,
+        answerDelay: true,
+        autoJump: true
+    };
+
+    // 加载保存的设置
+    (function loadSettings() {
+        const saved = GM_getValue('cx_helper_settings');
+        if (saved) Object.assign(settings, saved);
+    })();
+
+    // 主控制器
+    class CXHelper {
+        constructor() {
+            this.video = null;
+            this.autoPlayInterval = null;
+            this.init();
+        }
+
+        init() {
+            this.addGlobalStyles();
+            this.checkPageType();
+            this.initUI();
+            this.saveSettingsOnUnload();
+        }
+
+        addGlobalStyles() {
+            GM_addStyle(`
+                #cx-helper-panel {
+                    font-size: 14px;
+                    min-width: 200px;
+                }
+                #cx-helper-panel label {
+                    display: block;
+                    margin: 5px 0;
+                    cursor: pointer;
+                }
+                .cx-answer-mark {
+                    background: #4CAF50;
+                    color: white;
+                    padding: 2px 5px;
+                    border-radius: 3px;
+                    font-size: 12px;
+                    margin-left: 10px;
+                }
+            `);
+        }
+
+        checkPageType() {
+            if (location.href.includes('video')) {
+                this.videoHandler();
+            } else if (location.href.includes('work')) {
+                this.workHandler();
+            } else if (location.href.includes('course')) {
+                this.courseHandler();
+            }
+        }
+
+        initUI() {
+            const panel = document.createElement('div');
+            panel.id = 'cx-helper-panel';
+            panel.style = `
+                position: fixed;
+                bottom: 20px;
+                right: 20px;
+                z-index: 9999;
+                background: rgba(0,0,0,0.7);
+                color: white;
+                padding: 10px;
+                border-radius: 5px;
+                font-family: Arial;
+            `;
+
+            panel.innerHTML = `
+                <h3 style="margin-top:0">学习通助手 v0.3</h3>
+                <div>
+                    <label>
+                        <input type="checkbox" id="cx-auto-play" ${settings.autoPlay ? 'checked' : ''}>
+                        自动播放
+                    </label>
+                </div>
+                <div>
+                    <label>
+                        <input type="checkbox" id="cx-auto-next" ${settings.autoNext ? 'checked' : ''}>
+                        自动跳转
+                    </label>
+                </div>
+                <div>
+                    <label>
+                        <input type="checkbox" id="cx-auto-answer" ${settings.autoAnswer ? 'checked' : ''}>
+                        自动答题
+                    </label>
+                </div>
+                <div>
+                    <label>
+                        播放速度: <input type="range" id="cx-speed" min="0.5" max="16" step="0.5"
+                        value="${settings.speed}" style="width:100px">
+                        <span id="cx-speed-value">${settings.speed}x</span>
+                    </label>
+                </div>
+            `;
+
+            document.body.appendChild(panel);
+
+            // 添加事件监听
+            panel.querySelector('#cx-auto-play').addEventListener('change', (e) => {
+                settings.autoPlay = e.target.checked;
+            });
+
+            panel.querySelector('#cx-auto-next').addEventListener('change', (e) => {
+                settings.autoNext = e.target.checked;
+            });
+
+            panel.querySelector('#cx-auto-answer').addEventListener('change', (e) => {
+                settings.autoAnswer = e.target.checked;
+            });
+
+            panel.querySelector('#cx-speed').addEventListener('input', (e) => {
+                settings.speed = parseFloat(e.target.value);
+                document.querySelector('#cx-speed-value').textContent = `${settings.speed}x`;
+                if (this.video) this.video.playbackRate = settings.speed;
+            });
+        }
+
+        videoHandler() {
+            this.video = document.querySelector('video');
+            if (!this.video) return;
+
+            new VideoProcessor(this).process();
+        }
+
+        workHandler() {
+            new WorkProcessor(this).process();
+        }
+
+        courseHandler() {
+            new CourseProcessor(this).process();
+        }
+
+        saveSettingsOnUnload() {
+            window.addEventListener('beforeunload', () => {
+                GM_setValue('cx_helper_settings', settings);
+            });
+        }
+    }
+
+    // 视频处理器
+    class VideoProcessor {
+        constructor(helper) {
+            this.helper = helper;
+            this.video = helper.video;
+        }
+
+        process() {
+            this.fixPlayback();
+            this.setupVideoEvents();
+        }
+
+        fixPlayback() {
+            const tryFix = () => {
+                try {
+                    this.video.removeAttribute('controlsList');
+                    this.video.controls = true;
+                    return true;
+                } catch (e) {
+                    return false;
+                }
+            };
+
+            if (!tryFix()) {
+                const observer = new MutationObserver(() => {
+                    if (tryFix()) observer.disconnect();
+                });
+                observer.observe(this.video, { attributes: true });
+            }
+
+            if (settings.autoPlay) {
+                this.autoPlayInterval = setInterval(() => {
+                    if (this.video.paused && !this.video.ended) {
+                        this.video.play().catch(e => {
+                            console.log('播放失败:', e);
+                            clearInterval(this.autoPlayInterval);
+                        });
+                    }
+                }, 3000);
+            }
+        }
+
+        setupVideoEvents() {
+            this.video.addEventListener('ended', () => {
+                if (settings.autoNext) {
+                    this.findAndClickNextButton();
+                }
+            });
+
+            this.video.addEventListener('timeupdate', () => {
+                if (settings.speed !== this.video.playbackRate) {
+                    this.video.playbackRate = settings.speed;
+                }
+            });
+        }
+
+        findAndClickNextButton() {
+            const nextBtn = document.querySelector('.next');
+            if (nextBtn) {
+                setTimeout(() => nextBtn.click(), 1000);
+            }
+        }
+    }
+
+    // 课程处理器
+    class CourseProcessor {
+        constructor(helper) {
+            this.helper = helper;
+        }
+
+        process() {
+            this.setupAutoJump();
+        }
+
+        setupAutoJump() {
+            if (!settings.autoJump) return;
+
+            const observer = new MutationObserver(() => {
+                const unfinished = document.querySelector('.unfinished');
+                if (unfinished) {
+                    unfinished.click();
+                }
+            });
+
+            observer.observe(document.body, {
+                childList: true,
+                subtree: true
+            });
+        }
+    }
+
+    // 题目处理器
+    class WorkProcessor {
+        constructor(helper) {
+            this.helper = helper;
+            this.localDB = new LocalQuestionDB();
+            this.api = new FreeAIApi();
+            this.questions = [];
+        }
+
+        async process() {
+            this.collectQuestions();
+            await this.answerQuestions();
+        }
+
+        collectQuestions() {
+            const questionElements = document.querySelectorAll('.question');
+            this.questions = Array.from(questionElements).map(el => ({
+                element: el,
+                title: el.querySelector('.question-title').textContent.trim(),
+                type: this.getQuestionType(el),
+                options: this.getOptions(el)
+            }));
+        }
+
+        getQuestionType(element) {
+            if (element.querySelector('input[type="radio"]')) return 'single';
+            if (element.querySelector('input[type="checkbox"]')) return 'multiple';
+            if (element.querySelector('textarea')) return 'text';
+            return 'unknown';
+        }
+
+        getOptions(element) {
+            const options = element.querySelectorAll('.option');
+            return Array.from(options).map(opt => opt.textContent.trim());
+        }
+
+        async answerQuestions() {
+            for (const [index, q] of this.questions.entries()) {
+                if (settings.answerDelay) {
+                    await new Promise(resolve => setTimeout(resolve, index * 1000 + Math.random() * 2000));
+                }
+
+                try {
+                    let answer = await this.localDB.search(q.title);
+
+                    if (!answer && settings.useAI && q.type !== 'text') {
+                        answer = await this.api.queryAI(q.title, q.options);
+                        if (answer) {
+                            await this.localDB.save(q.title, answer);
+                        }
+                    }
+
+                    if (answer && settings.autoAnswer) {
+                        this.fillAnswer(q, answer);
+                    }
+                } catch (e) {
+                    console.error('处理题目出错:', e);
+                }
+            }
+        }
+
+        fillAnswer(question, answer) {
+            const answers = answer.split(',');
+            const inputs = question.element.querySelectorAll('input[type="radio"], input[type="checkbox"]');
+
+            answers.forEach(ans => {
+                const index = question.options.findIndex(opt => opt === ans);
+                if (index !== -1 && inputs[index]) {
+                    inputs[index].click();
+                }
+            });
+        }
+    }
+
+    // 本地题库
+    class LocalQuestionDB {
+        constructor() {
+            this.dbName = 'cx_question_db';
+            this.initDB();
+        }
+
+        initDB() {
+            if (!window.indexedDB) {
+                console.warn('IndexedDB not supported, using localStorage fallback');
+                this.useLocalStorage = true;
+            }
+        }
+
+        async search(question) {
+            const hash = this.hashQuestion(question);
+            return GM_getValue(hash) || null;
+        }
+
+        async save(question, answer) {
+            const hash = this.hashQuestion(question);
+            GM_setValue(hash, answer);
+        }
+
+        hashQuestion(question) {
+            return btoa(question.replace(/\s+/g, '').slice(0, 100));
+        }
+    }
+
+    // AI接口
+    class FreeAIApi {
+        constructor() {
+            this.endpoints = [
+                'https://api-free.example.com/v1/chat',
+                'https://backup-ai.example.com/api'
+            ];
+            this.currentEndpoint = 0;
+        }
+
+        async queryAI(question, options) {
+            const prompt = this.buildPrompt(question, options);
+
+            for (let i = 0; i < this.endpoints.length; i++) {
+                try {
+                    const response = await this.tryEndpoint(prompt);
+                    return this.parseResponse(response, options);
+                } catch (e) {
+                    console.warn(`Endpoint ${this.endpoints[this.currentEndpoint]} failed:`, e);
+                    this.currentEndpoint = (this.currentEndpoint + 1) % this.endpoints.length;
+                }
+            }
+            return null;
+        }
+
+        buildPrompt(question, options) {
+            return `请回答以下选择题，只需返回选项字母：
+问题：${question}
+选项：${options.map((o, i) => `${String.fromCharCode(65 + i)}. ${o}`).join(' ')}
+答案：`;
+        }
+
+        async tryEndpoint(prompt) {
+            return new Promise((resolve, reject) => {
+                GM_xmlhttpRequest({
+                    method: 'POST',
+                    url: this.endpoints[this.currentEndpoint],
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    data: JSON.stringify({ prompt }),
+                    onload: (res) => {
+                        if (res.status === 200) {
+                            resolve(JSON.parse(res.responseText));
+                        } else {
+                            reject(new Error(`API error: ${res.status}`));
+                        }
+                    },
+                    onerror: reject
+                });
+            });
+        }
+
+        parseResponse(response, options) {
+            const ans = response.choices?.[0]?.text?.trim() || '';
+            if (/^[A-Z]+$/.test(ans)) {
+                return ans.split('').map(c => options[c.charCodeAt(0) - 65]).join(',');
+            }
+            return null;
+        }
+    }
+
+    // 启动助手
+    new CXHelper();
+})();
